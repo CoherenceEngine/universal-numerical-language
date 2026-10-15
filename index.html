@@ -268,8 +268,8 @@ function researchExport(){
 function fieldNodeHtml(){
  const layers=fieldLayerRecords();
  return '<div class="field-cover"><div class="subtitle">OPTIONAL SYMBOLIC RESEARCH MODULE</div><h2>Field Node Explorer</h2><p>Five independently documented layers, one interactive space-time atlas. No physical field strength is inferred.</p></div>'
- +'<h2>Five-Layer Status</h2><div class="field-layer-grid">'+layers.map((x,i)=>'<details class="reading-section"><summary>'+x.id+' · '+esc(x.name)+' <span class="status-pill">'+esc(x.state)+'</span></summary><div class="reading-body"><p><b>Current output:</b> '+esc(x.value)+'</p><p>'+esc(x.detail)+'</p><p><b>Source:</b> '+esc(x.source)+'</p></div></details>').join("")+'</div>'
- +fieldMapHtml()
+ +'<h2>Five-Layer Status</h2><div id="liveFieldLayers" class="field-layer-grid">'+layers.map((x,i)=>'<details class="reading-section"><summary>'+x.id+' · '+esc(x.name)+' <span class="status-pill">'+esc(x.state)+'</span></summary><div class="reading-body"><p><b>Current output:</b> '+esc(x.value)+'</p><p>'+esc(x.detail)+'</p><p><b>Source:</b> '+esc(x.source)+'</p></div></details>').join("")+'</div>'
+ +'<div id="liveFieldMap">'+fieldMapHtml()+'</div>'
  +'<div class="field-data-tools">'+sourceExplorerHtml()+'</div>'
  +'<div class="actions"><button type="button" id="fieldResearchExport">Download Research Data (JSON)</button></div>'
  +'<h2>Illustrative Weight Sandbox</h2><p>These controls show hypothetical relative weights only. They do not change the calculated astronomy, lunar phase or geography.</p>'
@@ -279,10 +279,9 @@ function fieldNodeHtml(){
 }
 function refreshFieldView(){
  if(tab!=="field"||!data)return;
- const currentScroll=window.scrollY;
- $("content").innerHTML=fieldNodeHtml();
- updateFieldBars();
- window.scrollTo(0,currentScroll);
+ const layerHost=$("liveFieldLayers"),mapHost=$("liveFieldMap");
+ if(layerHost){layerHost.innerHTML=fieldLayerRecords().map(x=>'<details class="reading-section"><summary>'+x.id+' · '+esc(x.name)+' <span class="status-pill">'+esc(x.state)+'</span></summary><div class="reading-body"><p><b>Current output:</b> '+esc(x.value)+'</p><p>'+esc(x.detail)+'</p><p><b>Source:</b> '+esc(x.source)+'</p></div></details>').join("")}
+ if(mapHost)mapHost.innerHTML=fieldMapHtml();
 }
 function downloadResearch(){
  const payload=researchExport();if(!payload)return;
