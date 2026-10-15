@@ -188,9 +188,9 @@ async function lookupLocation(which){
  const status=$("geoStatus"),host=$(which==="birth"?"birthMatches":"currentMatches");
  if(!source||source.trim().length<2){status.textContent="Enter a location name in the atlas form first.";return}
  if(!$("geoConsent")?.checked){status.textContent="Check the consent box before sending location names to the geocoding provider.";return}
- status.textContent="Searching for "+source+"…";
+ status.textContent="Searching for "+source.split(",")[0].trim()+"… Choose the matching region from the results.";
  try{
- const url="https://geocoding-api.open-meteo.com/v1/search?name="+encodeURIComponent(source)+"&count=5&language=en&format=json";
+ const url="https://geocoding-api.open-meteo.com/v1/search?name="+encodeURIComponent(source.split(",")[0].trim())+"&count=10&language=en&format=json";
  const response=await fetch(url);if(!response.ok)throw Error("HTTP "+response.status);
  const json=await response.json();const matches=json.results||[];
  if(!matches.length){host.textContent="No matches found. Try city and country.";status.textContent="No matches.";return}
