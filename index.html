@@ -174,41 +174,68 @@ function offsetMinutesAt(utcDate,zone){
  return (Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second)-utcDate.getTime())/60000;
 }
 function historicalBirthInstant(date,time,zone){
- if(!/^\d{2}:\d{2}$/.test(time))throw Error("Enter a birth time to calculate a timed snapshot.");
- if(!zone)throw Error("Confirm the birthplace through geocoding to obtain a time zone.");
+ if(!/^\d{2}:\d{2}$/.test(time))throw Error("Enter a valid HH:MM birth time.");
+ if(!zone)throw Error("Confirm a birthplace with a time zone first.");
  const [y,m,d]=date.split("-").map(Number),[h,min]=time.split(":").map(Number);
  const wall=Date.UTC(y,m-1,d,h,min);
- let utc=wall;
- for(let i=0;i<5;i++){const next=wall-offsetMinutesAt(new Date(utc),zone)*60000;if(Math.abs(next-utc)<1000){utc=next;break}utc=next}
- const local=new Intl.DateTimeFormat("en-GB",{timeZone:zone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).format(new Date(utc));
- const actual=new Intl.DateTimeFormat("en-GB",{timeZone:zone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).format(new Date(wall));
- const wanted=[String(d).padStart(2,"0"),String(m).padStart(2,"0"),String(y)].join("/")+", "+[String(h).padStart(2,"0"),String(min).padStart(2,"0")].join(":");
- if(local!==wanted)throw Error("Local time is ambiguous or nonexistent under historical daylight-saving rules. Verify the historical offset.");
- return {date:new Date(utc),zone,offset:offsetMinutesAt(new Date(utc),zone),wanted};
+ const format=instant=>new Intl.DateTimeFormat("en-GB",{timeZone:zone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).format(instant);
+ const wanted=[d,m].map(n=>String(n).padStart(2,"0")).join("/")+"/"+y+", "+[h,min].map(n=>String(n).padStart(2,"0")).join(":");
+ const offsets=new Set([-36,-24,-12,0,12,24,36].map(hours=>offsetMinutesAt(new Date(wall+hours*3600000),zone)));
+ const matches=[...offsets].map(offset=>({date:new Date(wall-offset*60000),offset})).filter(x=>format(x.date)===wanted);
+ if(matches.length===0)throw Error("This local time does not exist in the historical time zone. Check the date and time.");
+ if(matches.length>1)throw Error("This local time is ambiguous during a clock change. Specify an offset before using it.");
+ return {date:matches[0].date,zone,offset:matches[0].offset,wanted};
 }
 const SIGNS=["Aries","Taurus","Gemini","Cancer","Leo","Virgo","Libra","Scorpio","Sagittarius","Capricorn","Aquarius","Pisces"];
 function zodiacLabel(deg){const n=((deg%360)+360)%360;return SIGNS[Math.floor(n/30)]+" "+(n%30).toFixed(2)+"°"}
 function angularGap(a,b){const diff=Math.abs(a-b)%360;return Math.min(diff,360-diff)}
 function findAspects(positions,orb){const aspects=[["Conjunction",0],["Sextile",60],["Square",90],["Trine",120],["Opposition",180]],found=[];for(let i=0;i<positions.length;i++)for(let j=i+1;j<positions.length;j++){const angle=angularGap(positions[i].lon,positions[j].lon);const match=aspects.map(x=>({name:x[0],delta:Math.abs(angle-x[1])})).sort((a,b)=>a.delta-b.delta)[0];if(match.delta<=orb)found.push({pair:positions[i].body+" / "+positions[j].body,aspect:match.name,orb:match.delta})}return found}
-async function calculateAstronomy(){
- const status=$("astroStatus");if(!status||!data)return;
- status.textContent="Loading astronomical calculation library…";
+let astronomySequence=0;
+async function calculateAstronomy(options={}){
+ if(!data)return;
+ const sequence=++astronomySequence;
+ const selectedDate=options.date||atlasCurrentDay();
+ const observation=selectedDate!==data.date;
+ const status=$("astroStatus"),mapStatus=$("atlasCalculationStatus");
+ if(status)status.textContent="Calculating astronomical positions for "+selectedDate+"…";
+ if(mapStatus)mapStatus.textContent="Calculating "+selectedDate+"…";
  try{
  const A=await loadAstroLibrary();
  const location=geoResults.birth;
- const useTimed=Boolean(data.time&&location?.timezone);
- if(data.time&&!location?.timezone)throw Error("Confirm your birthplace in the location section before using birth time.");
- const instant=useTimed?historicalBirthInstant(data.date,data.time,location.timezone):{date:(()=>{const [y,m,d]=data.date.split("-").map(Number);return new Date(Date.UTC(y,m-1,d,12))})(),zone:"UTC",offset:0};
+ let instant;
+ if(!observation&&data.time){
+   if(!location?.timezone)throw Error("Confirm your birthplace before calculating the timed birth snapshot.");
+   instant=historicalBirthInstant(data.date,data.time,location.timezone);
+ }else{
+   const [y,m,d]=selectedDate.split("-").map(Number);
+   instant={date:new Date(Date.UTC(y,m-1,d,12)),zone:"UTC",offset:0};
+ }
  const date=instant.date,observer=new A.Observer(location?.latitude||0,location?.longitude||0,0);
  const phase=A.MoonPhase(date),illum=A.Illumination("Moon",date);
  const bodies=["Sun","Moon","Mercury","Venus","Mars","Jupiter","Saturn"];
  const positions=bodies.map(body=>{const q=A.Equator(body,date,observer,true,true),e=A.Ecliptic(A.GeoVector(body,date,true));return {body,ra:q.ra,dec:q.dec,lon:e.elon}});
  const orb=Number($("aspectOrb")?.value||6),aspects=findAspects(positions,orb);
- astroResult={date:date.toISOString(),phaseAngle:phase,illumination:illum.phase_fraction,positions,aspects,zone:instant.zone,source:"Astronomy Engine 2.1.19"};
+ if(sequence!==astronomySequence)return;
+ astroResult={date:date.toISOString(),observationDate:selectedDate,mode:observation?"observation-noon-UTC":data.time?"birth-local-time":"birth-noon-UTC",phaseAngle:phase,illumination:illum.phase_fraction,positions,aspects,zone:instant.zone,offsetMinutes:instant.offset,aspectOrb:orb,source:"Astronomy Engine 2.1.19",calculatedAt:new Date().toISOString()};
  const label=phase<45||phase>=315?"New Moon vicinity":phase<135?"Waxing Moon":phase<225?"Full Moon vicinity":"Waning Moon";
- $("astroResults").innerHTML='<h3>Calculated astronomical snapshot</h3><p><b>UTC instant:</b> '+esc(astroResult.date)+'<br><b>Time zone:</b> '+esc(instant.zone)+(useTimed?' (historical offset '+instant.offset+' minutes)':' (12:00 UTC date-only fallback)')+'</p><p><b>Lunar phase angle:</b> '+phase.toFixed(2)+'° · '+esc(label)+'</p><p><b>Illuminated lunar fraction:</b> '+(illum.phase_fraction*100).toFixed(2)+'%</p><h3>Geocentric ecliptic longitudes, tropical zodiac</h3><div class="astro-table">'+positions.map(p=>'<div><b>'+esc(p.body)+'</b><span>'+esc(zodiacLabel(p.lon))+' · '+p.lon.toFixed(3)+'° longitude<br>RA '+p.ra.toFixed(3)+' h · Dec '+p.dec.toFixed(3)+'°</span></div>').join("")+'</div><h3>Selected angular aspects</h3>'+(aspects.length?'<div class="astro-table">'+aspects.map(x=>'<div><b>'+esc(x.pair)+'</b><span>'+esc(x.aspect)+' · orb '+x.orb.toFixed(2)+'°</span></div>').join("")+'</div>':'<p>No aspects meet the selected orb.</p>')+'<p class="muted">Tropical zodiac and geometric aspect labels are chosen conventions. No natal houses or astrological predictions are calculated. RA = right ascension; Dec = declination.</p>';
- status.textContent="Astronomy and lunar calculations completed.";setTimeout(refreshFieldView,1200);
- }catch(e){status.textContent="Astronomy unavailable: "+e.message}
+ const result=$("astroResults");
+ if(result)result.innerHTML='<h3>Calculated astronomical snapshot</h3><p><b>Observation date:</b> '+esc(selectedDate)+'<br><b>UTC instant:</b> '+esc(astroResult.date)+'<br><b>Calculation mode:</b> '+esc(astroResult.mode)+'<br><b>Time zone:</b> '+esc(instant.zone)+' (offset '+instant.offset+' minutes)</p><p><b>Lunar phase angle:</b> '+phase.toFixed(2)+'° · '+esc(label)+'</p><p><b>Illuminated lunar fraction:</b> '+(illum.phase_fraction*100).toFixed(2)+'%</p><h3>Tropical geocentric longitudes</h3><div class="astro-table">'+positions.map(p=>'<div><b>'+esc(p.body)+'</b><span>'+esc(zodiacLabel(p.lon))+' · '+p.lon.toFixed(3)+'°<br>RA '+p.ra.toFixed(3)+' h · Dec '+p.dec.toFixed(3)+'°</span></div>').join("")+'</div><h3>Angular aspects</h3>'+(aspects.length?'<div class="astro-table">'+aspects.map(x=>'<div><b>'+esc(x.pair)+'</b><span>'+esc(x.aspect)+' · orb '+x.orb.toFixed(2)+'°</span></div>').join("")+'</div>':'<p>No aspects meet the selected orb.</p>')+'<p class="muted">Observation dates use 12:00 UTC. Birth-date snapshots use entered local time only after confirming a birthplace. No houses or physical field score.</p>';
+ if(status)status.textContent="Astronomy and Moon recalculated for "+selectedDate+".";
+ if(mapStatus)mapStatus.textContent="Astronomy and Moon updated for "+selectedDate+".";
+ refreshFieldView();
+ }catch(e){
+ if(sequence!==astronomySequence)return;
+ astroResult=null;
+ if(status)status.textContent="Astronomy calculation failed: "+e.message;
+ if(mapStatus)mapStatus.textContent="Calculation failed: "+e.message;
+ refreshFieldView();
+ }
+}
+function onAtlasDateChange(){
+ if(!data)return;
+ const mapStatus=$("atlasCalculationStatus");
+ if(mapStatus)mapStatus.textContent="Observation date selected: "+atlasCurrentDay()+".";
+ if(astroResult)calculateAstronomy({date:atlasCurrentDay()});
 }
 function distanceKm(a,b){const R=6371,toRad=x=>x*Math.PI/180,dLat=toRad(b.latitude-a.latitude),dLon=toRad(b.longitude-a.longitude),v=Math.sin(dLat/2)**2+Math.cos(toRad(a.latitude))*Math.cos(toRad(b.latitude))*Math.sin(dLon/2)**2;return 2*R*Math.asin(Math.min(1,Math.sqrt(v)))}
 async function lookupLocation(which){
@@ -255,12 +282,12 @@ function fieldLayerRecords(){
 
 let atlasDay=null,atlasSelected=0;
 function atlasCurrentDay(){return atlasDay||data.date}
-function atlasShift(n){const d=new Date(atlasCurrentDay()+"T12:00:00Z");d.setUTCDate(d.getUTCDate()+n);atlasDay=d.toISOString().slice(0,10);refreshAtlas()}
+function atlasShift(n){const d=new Date(atlasCurrentDay()+"T12:00:00Z");d.setUTCDate(d.getUTCDate()+n);atlasDay=d.toISOString().slice(0,10);refreshAtlas();onAtlasDateChange()}
 function fieldMapHtml(){
  const layers=fieldLayerRecords();
- return '<h2>Interactive Space-Time Atlas</h2><p>Choose a node, change the observation date, and inspect the source of every layer. The observation date does not alter birth numerology or previously calculated sky positions.</p>'
+ return '<h2>Interactive Space-Time Atlas</h2><p>Choose a node, change the observation date, and inspect the source of every layer. The observation date triggers fresh astronomical and lunar calculations after the first successful astronomy run. Birth numerology remains fixed.</p>'
  +'<div class="atlas-controls"><label for="atlasDay">Observation date</label><input type="date" id="atlasDay" value="'+esc(atlasCurrentDay())+'"><button type="button" data-day-shift="-1">Previous day</button><button type="button" data-day-shift="1">Next day</button><button type="button" id="atlasBirthDay">Reset to birth</button></div>'
- +'<div id="atlasVisual">'+atlasVisualHtml()+'</div><div class="detail" id="fieldNodeDetail" role="status">Select a node to inspect its provenance.</div>';
+ +'<p id="atlasCalculationStatus" class="muted" role="status">Choose a date to calculate an observation snapshot.</p><div id="atlasVisual">'+atlasVisualHtml()+'</div><div class="detail" id="fieldNodeDetail" role="status">Select a node to inspect its provenance.</div>';
 }
 function atlasVisualHtml(){
  const layers=fieldLayerRecords(),a=geoResults.birth,b=geoResults.current;
@@ -278,7 +305,7 @@ function selectFieldNode(i){
 }
 function researchExport(){
  if(!data)return null;
- return {format:"UNL-field-node-research-v2",generatedAt:new Date().toISOString(),subject:{name:data.name,birthDate:data.date,birthTime:data.time||null,birthPlaceText:data.place||null,currentResidenceText:data.currentPlace||null},numerology:data.records.map(r=>({name:r[0],raw:r[1],reduction:r[2],method:r[3]})),astronomy:astroResult,locations:geoResults,layers:fieldLayerRecords(),methodology:{astrology:"Tropical zodiac, geocentric ecliptic longitudes, configurable aspect orb; no houses",time:"Birth time plus confirmed birthplace time zone, otherwise noon UTC fallback",lunar:"Astronomy Engine phase angle and illumination",geocoding:"Open-Meteo / GeoNames; explicit user consent and city selection",fieldNode:"Illustrative layer explorer, no coherence score or proprietary equations"},limitations:["Symbolic numerology is not an empirical personality measurement","Astronomical and geographic outputs are not physical evidence for a Field Node model","Historical time zones may require independent archival verification","Birth and residence coordinates are city-level approximations"]};
+ return {format:"UNL-field-node-research-v2",generatedAt:new Date().toISOString(),subject:{name:data.name,birthDate:data.date,birthTime:data.time||null,birthPlaceText:data.place||null,currentResidenceText:data.currentPlace||null},numerology:data.records.map(r=>({name:r[0],raw:r[1],reduction:r[2],method:r[3]})),astronomy:astroResult,observationDate:atlasCurrentDay(),observationStatus:astroResult?.observationDate===atlasCurrentDay()?"current":"not-calculated-for-selected-date",locations:geoResults,layers:fieldLayerRecords(),methodology:{astrology:"Tropical zodiac, geocentric ecliptic longitudes, configurable aspect orb; no houses",time:"Birth date plus confirmed birthplace uses historical local time when provided; other observation dates use 12:00 UTC",lunar:"Astronomy Engine phase angle and illumination",geocoding:"Open-Meteo / GeoNames; explicit user consent and city selection",fieldNode:"Illustrative layer explorer, no coherence score or proprietary equations"},limitations:["Symbolic numerology is not an empirical personality measurement","Astronomical and geographic outputs are not physical evidence for a Field Node model","Historical time zones may require independent archival verification","Birth and residence coordinates are city-level approximations"]};
 }
 function fieldNodeHtml(){
  const layers=fieldLayerRecords();
@@ -338,10 +365,10 @@ $("form").addEventListener("submit",e=>{e.preventDefault();try{data=make();astro
 $("form").addEventListener("reset",()=>{data=null;$("results").classList.add("hidden");$("status").textContent="Form cleared."});
 $("example").addEventListener("click",()=>{$("name").value="Ada Lovelace";$("date").value="1815-12-10";$("place").value="London, England";$("status").textContent="Example loaded. Select Generate Atlas."});
 document.querySelectorAll("[data-tab]").forEach(b=>b.addEventListener("click",()=>{tab=b.dataset.tab;render()}));
-$("content").addEventListener("click",e=>{if(e.target.id==="astroCalculate")calculateAstronomy();if(e.target.id==="atlasBirthDay"){atlasDay=data.date;refreshAtlas()}const shift=e.target.closest("[data-day-shift]");if(shift)atlasShift(Number(shift.dataset.dayShift));if(e.target.id==="fieldResearchExport")downloadResearch();const node=e.target.closest("[data-field-node]");if(node){selectFieldNode(Number(node.dataset.fieldNode));const visual=$("atlasVisual");if(visual)visual.innerHTML=atlasVisualHtml()}const search=e.target.closest("[data-geo-search]");if(search)lookupLocation(search.dataset.geoSearch);const confirm=e.target.closest("[data-geo-confirm]");if(confirm)confirmLocation(confirm.dataset.geoConfirm)});
+$("content").addEventListener("click",e=>{if(e.target.id==="astroCalculate")calculateAstronomy({date:atlasCurrentDay()});if(e.target.id==="atlasBirthDay"){atlasDay=data.date;refreshAtlas();onAtlasDateChange()}const shift=e.target.closest("[data-day-shift]");if(shift)atlasShift(Number(shift.dataset.dayShift));if(e.target.id==="fieldResearchExport")downloadResearch();const node=e.target.closest("[data-field-node]");if(node){selectFieldNode(Number(node.dataset.fieldNode));const visual=$("atlasVisual");if(visual)visual.innerHTML=atlasVisualHtml()}const search=e.target.closest("[data-geo-search]");if(search)lookupLocation(search.dataset.geoSearch);const confirm=e.target.closest("[data-geo-confirm]");if(confirm)confirmLocation(confirm.dataset.geoConfirm)});
 $("content").addEventListener("keydown",e=>{const node=e.target.closest("[data-field-node]");if(node&&(e.key==="Enter"||e.key===" ")){e.preventDefault();selectFieldNode(Number(node.dataset.fieldNode))}});
 $("content").addEventListener("input",e=>{if(e.target.matches("[data-field-weight]"))updateFieldBars()});
-$("content").addEventListener("change",e=>{if(e.target.matches("#compareA,#compareB"))refreshComparison();if(e.target.id==="atlasDay"){atlasDay=e.target.value||data.date;refreshAtlas()}});
+$("content").addEventListener("change",e=>{if(e.target.matches("#compareA,#compareB"))refreshComparison();if(e.target.id==="atlasDay"){atlasDay=e.target.value||data.date;refreshAtlas();onAtlasDateChange()}});
 $("content").addEventListener("click",e=>{let r=e.target.closest("[data-record]"),t=e.target.closest("[data-trad]"),d=$("detail");if(!d)return;if(r){let x=data.records[Number(r.dataset.record)];d.innerHTML="<h3>"+esc(x[0])+"</h3><p><b>Reduction:</b> "+esc(x[2])+"</p><p><b>Rule:</b> "+esc(x[3])+"</p><p><b>Raw value:</b> "+x[1]+"</p><p>This record retains its original method and is not assumed equivalent to other traditions.</p>"}if(t){let i=Number(t.dataset.trad);d.innerHTML="<h3>"+esc(traditions[i])+"</h3><p><b>Status:</b> "+(implemented.has(i)?"Implemented or partial":"Not yet calculated")+"</p><p>"+(i===0?"Name total: "+esc(data.records[0][2]):i===1?"Name total: "+esc(data.records[1][2]):i===2?"Birth number: "+esc(data.records[5][2])+"; destiny: "+esc(data.records[4][2]):i===3?"Lo Shu birth-date digit grid is shown in Overview.":i===5?"Master-number Life Path: "+esc(data.records[4][2]):i===6?(data.native.hebrew?"Hebrew gematria total: "+data.native.hebrew.total:"Enter a Hebrew spelling to calculate."):i===8?(data.native.greek?"Greek isopsephy total: "+data.native.greek.total:"Enter a Greek spelling to calculate."):i===9?(data.native.arabic?"Arabic Abjad total: "+data.native.arabic.total:"Enter an Arabic spelling to calculate."):"A source-specific spelling, convention, or additional calculation adapter is required.")+"</p>"}});
 $("copy").addEventListener("click",async()=>{if(!data)return;let text=data.name+" | "+data.date+"\n"+data.records.map(r=>r[0]+": "+r[2]).join("\n")+"\n\nPersonal reading: "+narrativeText();try{await navigator.clipboard.writeText(text);$("actionStatus").textContent="Summary copied."}catch(e){$("actionStatus").textContent="Clipboard unavailable here. Use Download JSON."}});
 $("download").addEventListener("click",()=>{if(!data)return;let a=document.createElement("a"),u=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:"application/json"}));a.href=u;a.download="UNL-atlas.json";document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1000);$("actionStatus").textContent="JSON download requested."});
