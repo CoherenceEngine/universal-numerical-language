@@ -167,19 +167,47 @@ function loadAstroLibrary(){
  });
  return astroLibraryPromise;
 }
-function astroDate(){const [y,m,d]=data.date.split("-").map(Number);return new Date(Date.UTC(y,m-1,d,12,0,0))}
+
+function offsetMinutesAt(utcDate,zone){
+ const parts=new Intl.DateTimeFormat("en-GB",{timeZone:zone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).formatToParts(utcDate);
+ const p=Object.fromEntries(parts.filter(x=>x.type!=="literal").map(x=>[x.type,Number(x.value)]));
+ return (Date.UTC(p.year,p.month-1,p.day,p.hour,p.minute,p.second)-utcDate.getTime())/60000;
+}
+function historicalBirthInstant(date,time,zone){
+ if(!/^\d{2}:\d{2}$/.test(time))throw Error("Enter a birth time to calculate a timed snapshot.");
+ if(!zone)throw Error("Confirm the birthplace through geocoding to obtain a time zone.");
+ const [y,m,d]=date.split("-").map(Number),[h,min]=time.split(":").map(Number);
+ const wall=Date.UTC(y,m-1,d,h,min);
+ let utc=wall;
+ for(let i=0;i<5;i++){const next=wall-offsetMinutesAt(new Date(utc),zone)*60000;if(Math.abs(next-utc)<1000){utc=next;break}utc=next}
+ const local=new Intl.DateTimeFormat("en-GB",{timeZone:zone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).format(new Date(utc));
+ const actual=new Intl.DateTimeFormat("en-GB",{timeZone:zone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).format(new Date(wall));
+ const wanted=[String(d).padStart(2,"0"),String(m).padStart(2,"0"),String(y)].join("/")+", "+[String(h).padStart(2,"0"),String(min).padStart(2,"0")].join(":");
+ if(local!==wanted)throw Error("Local time is ambiguous or nonexistent under historical daylight-saving rules. Verify the historical offset.");
+ return {date:new Date(utc),zone,offset:offsetMinutesAt(new Date(utc),zone),wanted};
+}
+const SIGNS=["Aries","Taurus","Gemini","Cancer","Leo","Virgo","Libra","Scorpio","Sagittarius","Capricorn","Aquarius","Pisces"];
+function zodiacLabel(deg){const n=((deg%360)+360)%360;return SIGNS[Math.floor(n/30)]+" "+(n%30).toFixed(2)+"°"}
+function angularGap(a,b){const diff=Math.abs(a-b)%360;return Math.min(diff,360-diff)}
+function findAspects(positions,orb){const aspects=[["Conjunction",0],["Sextile",60],["Square",90],["Trine",120],["Opposition",180]],found=[];for(let i=0;i<positions.length;i++)for(let j=i+1;j<positions.length;j++){const angle=angularGap(positions[i].lon,positions[j].lon);const match=aspects.map(x=>({name:x[0],delta:Math.abs(angle-x[1])})).sort((a,b)=>a.delta-b.delta)[0];if(match.delta<=orb)found.push({pair:positions[i].body+" / "+positions[j].body,aspect:match.name,orb:match.delta})}return found}
 async function calculateAstronomy(){
  const status=$("astroStatus");if(!status||!data)return;
  status.textContent="Loading astronomical calculation library…";
  try{
- const A=await loadAstroLibrary(),date=astroDate(),observer=new A.Observer(0,0,0);
+ const A=await loadAstroLibrary();
+ const location=geoResults.birth;
+ const useTimed=Boolean(data.time&&location?.timezone);
+ if(data.time&&!location?.timezone)throw Error("Confirm your birthplace in the location section before using birth time.");
+ const instant=useTimed?historicalBirthInstant(data.date,data.time,location.timezone):{date:(()=>{const [y,m,d]=data.date.split("-").map(Number);return new Date(Date.UTC(y,m-1,d,12))})(),zone:"UTC",offset:0};
+ const date=instant.date,observer=new A.Observer(location?.latitude||0,location?.longitude||0,0);
  const phase=A.MoonPhase(date),illum=A.Illumination("Moon",date);
  const bodies=["Sun","Moon","Mercury","Venus","Mars","Jupiter","Saturn"];
- const positions=bodies.map(body=>{const q=A.Equator(body,date,observer,true,true);return {body,ra:q.ra,dec:q.dec}});
- astroResult={date:date.toISOString(),phaseAngle:phase,illumination:illum.phase_fraction,positions,source:"Astronomy Engine 2.1.19"};
- const label=phase<45?"New Moon vicinity":phase<135?"Waxing Moon":phase<225?"Full Moon vicinity":"Waning Moon";
- $("astroResults").innerHTML='<h3>Calculated astronomical snapshot</h3><p><b>UTC timestamp:</b> '+esc(astroResult.date)+' (noon UTC on the birth date, not the precise natal time)</p><p><b>Lunar phase angle:</b> '+phase.toFixed(2)+'° · '+esc(label)+'</p><p><b>Illuminated lunar fraction:</b> '+(illum.phase_fraction*100).toFixed(2)+'%</p><h3>Geocentric sky coordinates</h3><div class="astro-table">'+positions.map(p=>'<div><b>'+esc(p.body)+'</b><span>RA '+p.ra.toFixed(3)+' h · Dec '+p.dec.toFixed(3)+'°</span></div>').join("")+'</div><p class="muted">RA = right ascension; Dec = declination. These are astronomical positions, not astrological interpretations or natal houses.</p>';
- status.textContent="Astronomy calculations completed locally.";
+ const positions=bodies.map(body=>{const q=A.Equator(body,date,observer,true,true),e=A.Ecliptic(A.GeoVector(body,date,true));return {body,ra:q.ra,dec:q.dec,lon:e.elon}});
+ const orb=Number($("aspectOrb")?.value||6),aspects=findAspects(positions,orb);
+ astroResult={date:date.toISOString(),phaseAngle:phase,illumination:illum.phase_fraction,positions,aspects,zone:instant.zone,source:"Astronomy Engine 2.1.19"};
+ const label=phase<45||phase>=315?"New Moon vicinity":phase<135?"Waxing Moon":phase<225?"Full Moon vicinity":"Waning Moon";
+ $("astroResults").innerHTML='<h3>Calculated astronomical snapshot</h3><p><b>UTC instant:</b> '+esc(astroResult.date)+'<br><b>Time zone:</b> '+esc(instant.zone)+(useTimed?' (historical offset '+instant.offset+' minutes)':' (12:00 UTC date-only fallback)')+'</p><p><b>Lunar phase angle:</b> '+phase.toFixed(2)+'° · '+esc(label)+'</p><p><b>Illuminated lunar fraction:</b> '+(illum.phase_fraction*100).toFixed(2)+'%</p><h3>Geocentric ecliptic longitudes, tropical zodiac</h3><div class="astro-table">'+positions.map(p=>'<div><b>'+esc(p.body)+'</b><span>'+esc(zodiacLabel(p.lon))+' · '+p.lon.toFixed(3)+'° longitude<br>RA '+p.ra.toFixed(3)+' h · Dec '+p.dec.toFixed(3)+'°</span></div>').join("")+'</div><h3>Selected angular aspects</h3>'+(aspects.length?'<div class="astro-table">'+aspects.map(x=>'<div><b>'+esc(x.pair)+'</b><span>'+esc(x.aspect)+' · orb '+x.orb.toFixed(2)+'°</span></div>').join("")+'</div>':'<p>No aspects meet the selected orb.</p>')+'<p class="muted">Tropical zodiac and geometric aspect labels are chosen conventions. No natal houses or astrological predictions are calculated. RA = right ascension; Dec = declination.</p>';
+ status.textContent="Astronomy and lunar calculations completed.";
  }catch(e){status.textContent="Astronomy unavailable: "+e.message}
 }
 function distanceKm(a,b){const R=6371,toRad=x=>x*Math.PI/180,dLat=toRad(b.latitude-a.latitude),dLon=toRad(b.longitude-a.longitude),v=Math.sin(dLat/2)**2+Math.cos(toRad(a.latitude))*Math.cos(toRad(b.latitude))*Math.sin(dLon/2)**2;return 2*R*Math.asin(Math.min(1,Math.sqrt(v)))}
@@ -209,15 +237,15 @@ function confirmLocation(which){
 }
 function sourceExplorerHtml(){
  return '<h2>Verified Astronomy and Location Data</h2><p>These optional tools use independent astronomical calculations and city-level geocoding. Neither contributes a validated Field Node score.</p>'
- +'<div class="detail"><h3>Astronomy and lunar phase</h3><p>Compute a sky snapshot for '+esc(data.date)+' at 12:00 UTC. This is <b>not</b> a natal chart for the entered birth time. Accurate natal astrology requires historical time-zone handling and further methodological choices.</p><button type="button" id="astroCalculate">Calculate sky positions and lunar phase</button><p id="astroStatus" role="status" class="muted">No calculation requested.</p><div id="astroResults"></div><p class="muted">Source: <a href="https://github.com/cosinekitty/astronomy" target="_blank" rel="noopener noreferrer">Astronomy Engine</a>, version 2.1.19. Calculations run in your browser after loading the library.</p></div>'
+ +'<div class="detail"><h3>Astronomy and lunar phase</h3><p>Compute a sky snapshot for '+esc(data.date)+'. When a birth time and confirmed birthplace are available, historical time-zone conversion is used. Otherwise the fallback is noon UTC. This is not a complete natal chart.</p><label for="aspectOrb">Aspect orb (degrees)</label><select id="aspectOrb"><option value="3">3° strict</option><option value="6" selected>6° standard demonstration</option><option value="8">8° broad</option></select><p class="muted">Tropical zodiac, geocentric longitudes; no house system selected or calculated.</p><button type="button" id="astroCalculate">Calculate sky positions and lunar phase</button><p id="astroStatus" role="status" class="muted">No calculation requested.</p><div id="astroResults"></div><p class="muted">Source: <a href="https://github.com/cosinekitty/astronomy" target="_blank" rel="noopener noreferrer">Astronomy Engine</a>, version 2.1.19. Calculations run in your browser after loading the library.</p></div>'
  +'<div class="detail"><h3>Geographic coordinates, with consent</h3><p>Location searches transmit only the entered birthplace or residence text to Open-Meteo Geocoding. No full name or birth date is sent. Choose the correct result before coordinates are accepted.</p><label><input type="checkbox" id="geoConsent" style="width:auto;margin-right:8px">I agree to send location names to Open-Meteo for lookup.</label><div class="actions"><button type="button" data-geo-search="birth">Find birthplace</button><button type="button" data-geo-search="current">Find current residence</button></div><p id="geoStatus" role="status" class="muted">No location data has been requested.</p><div id="birthMatches"></div><div id="currentMatches"></div><p id="geoDistance" class="muted">Confirm both city locations to compare geographic distance.</p><p class="muted">Source: <a href="https://open-meteo.com/en/docs/geocoding-api" target="_blank" rel="noopener noreferrer">Open-Meteo Geocoding</a>, based on GeoNames. City-center coordinates are approximate.</p></div>';
 }
 function fieldNodeHtml(){
  const year=new Date().getFullYear();
  const layers=[
  {id:"N",name:"Numerology",value:data.records[4][2],status:"Calculated",detail:"Life Path, name values and birth-date digit structures. Symbolic numerology, not a biometric measurement."},
- {id:"A",name:"Astrology",value:"Not calculated",status:"Requires ephemeris",detail:"Accurate natal aspects require astronomical ephemeris positions, time-zone resolution and a selected house system. No chart is fabricated."},
- {id:"M",name:"Moon",value:"Not calculated",status:"Requires lunar ephemeris",detail:"Lunar phase and illumination require date-specific astronomical calculations. This demonstration does not substitute an approximate phase for verified data."},
+ {id:"A",name:"Astrology",value:"Not calculated",status:"Requires ephemeris",detail:"The explorer can calculate tropical geocentric longitudes and selected aspects. Natal houses are not calculated."},
+ {id:"M",name:"Moon",value:"Not calculated",status:"Requires lunar ephemeris",detail:"Lunar phase and illumination require date-specific astronomical calculations. A lunar phase calculation is available using Astronomy Engine."},
  {id:"G",name:"Geography",value:data.place||"Not supplied",status:"Context only",detail:"Birthplace and current residence are retained as user-entered text. No coordinates, distances or ley-line claims are inferred."},
  {id:"T",name:"Timing",value:String(year),status:"Calendar context",detail:"The current calendar year and optional birth time are displayed as context. Timing does not imply a causal activation window."}
  ];
